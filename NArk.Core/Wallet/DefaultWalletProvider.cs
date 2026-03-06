@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Safety;
@@ -13,7 +14,8 @@ public class DefaultWalletProvider(
     IClientTransport clientTransport,
     ISafetyService safetyService,
     IWalletStorage walletStorage,
-    IContractStorage contractStorage)
+    IContractStorage contractStorage,
+    ILogger<DefaultWalletProvider>? logger = null)
     : IWalletProvider
 {
     public async Task<IArkadeWalletSigner?> GetSignerAsync(string identifier, CancellationToken cancellationToken = default)
@@ -21,15 +23,18 @@ public class DefaultWalletProvider(
         try
         {
             var wallet = await walletStorage.LoadWallet(identifier, cancellationToken);
+            logger?.LogDebug("GetSignerAsync: identifier={Identifier}, walletId={WalletId}, walletType={WalletType}, accountDescriptor={AccountDescriptor}",
+                identifier, wallet.Id, wallet.WalletType, wallet.AccountDescriptor);
             return wallet.WalletType switch
             {
                 WalletType.HD => new HierarchicalDeterministicWalletSigner(wallet),
-                WalletType.SingleKey => NSecWalletSigner.FromNsec(wallet.Secret),
+                WalletType.SingleKey => NSecWalletSigner.FromNsec(wallet.Secret, logger),
                 _ => throw new ArgumentOutOfRangeException(nameof(wallet.WalletType))
             };
         }
         catch (KeyNotFoundException)
         {
+            logger?.LogWarning("GetSignerAsync: wallet not found for identifier={Identifier}", identifier);
             return null;
         }
     }
@@ -45,10 +50,22 @@ public class DefaultWalletProvider(
             {
                 sweepDestination = ArkAddress.Parse(wallet.Destination);
             }
+            if (wallet.WalletType == WalletType.SingleKey)
+            {
+                var derivedDescriptor = WalletFactory.GetOutputDescriptorFromNsec(wallet.Secret);
+                if (wallet.AccountDescriptor != derivedDescriptor)
+                {
+                    logger?.LogWarning(
+                        "SingleKey wallet {WalletId} stored descriptor mismatch — using derived. stored={StoredDescriptor}, derived={DerivedDescriptor}",
+                        wallet.Id, wallet.AccountDescriptor, derivedDescriptor);
+                    wallet = wallet with { AccountDescriptor = derivedDescriptor };
+                }
+            }
+
             return wallet.WalletType switch
             {
                 WalletType.HD => new HierarchicalDeterministicAddressProvider(clientTransport, safetyService, walletStorage, contractStorage, wallet, network, sweepDestination),
-                WalletType.SingleKey => new SingleKeyAddressProvider(clientTransport, wallet, network, sweepDestination),
+                WalletType.SingleKey => new SingleKeyAddressProvider(clientTransport, wallet, network, sweepDestination, logger),
                 _ => throw new ArgumentOutOfRangeException(nameof(wallet.WalletType))
             };
         }

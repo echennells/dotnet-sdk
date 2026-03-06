@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.VTXOs;
@@ -7,11 +8,14 @@ using NBitcoin;
 
 namespace NArk.Core.Transformers;
 
-public class HashLockedContractTransformer(IWalletProvider walletProvider) : IContractTransformer
+public class HashLockedContractTransformer(IWalletProvider walletProvider, ILogger<HashLockedContractTransformer>? logger = null) : IContractTransformer
 {
     public async Task<bool> CanTransform(string walletIdentifier, ArkContract contract, ArkVtxo vtxo)
     {
         if (contract is not HashLockedArkPaymentContract hashLockedArkPaymentContract)
+            return false;
+
+        if (hashLockedArkPaymentContract.User is null)
             return false;
 
         if (await walletProvider.GetAddressProviderAsync(walletIdentifier) is not { } addressProvider)
@@ -20,7 +24,7 @@ public class HashLockedContractTransformer(IWalletProvider walletProvider) : ICo
         if (!await addressProvider.IsOurs(hashLockedArkPaymentContract.User))
             return false;
 
-        if (await walletProvider.GetSignerAsync(walletIdentifier) is not { } signer)
+        if (await walletProvider.GetSignerAsync(walletIdentifier) is null)
             return false;
 
         return true;

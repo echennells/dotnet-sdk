@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
@@ -14,15 +15,29 @@ public class SingleKeyAddressProvider(
     IClientTransport transport,
     ArkWalletInfo wallet,
     Network network,
-    ArkAddress? sweepingAddress
+    ArkAddress? sweepingAddress,
+    ILogger? logger = null
 ) : IArkadeAddressProvider
 {
     public OutputDescriptor Descriptor { get; } = OutputDescriptor.Parse(wallet.AccountDescriptor!, network);
 
     public Task<bool> IsOurs(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(
-            descriptor.Extract().XOnlyPubKey.ToBytes().SequenceEqual(Descriptor.Extract().XOnlyPubKey.ToBytes()));
+        var theirs = descriptor.Extract().XOnlyPubKey.ToBytes();
+        var ours = Descriptor.Extract().XOnlyPubKey.ToBytes();
+        var match = theirs.SequenceEqual(ours);
+
+        if (!match)
+        {
+            logger?.LogDebug(
+                "IsOurs: walletId={WalletId}, match=false, " +
+                "theirXOnly={TheirXOnly}, ourXOnly={OurXOnly}",
+                wallet.Id,
+                Convert.ToHexString(theirs).ToLowerInvariant(),
+                Convert.ToHexString(ours).ToLowerInvariant());
+        }
+
+        return Task.FromResult(match);
     }
 
     public Task<OutputDescriptor> GetNextSigningDescriptor(CancellationToken cancellationToken = default)

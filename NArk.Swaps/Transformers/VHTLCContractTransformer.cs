@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Blockchain;
 using NArk.Abstractions.Contracts;
@@ -9,7 +10,7 @@ using NBitcoin;
 
 namespace NArk.Swaps.Transformers;
 
-public class VHTLCContractTransformer(IWalletProvider walletProvider, IChainTimeProvider chainTimeProvider) : IContractTransformer
+public class VHTLCContractTransformer(IWalletProvider walletProvider, IChainTimeProvider chainTimeProvider, ILogger<VHTLCContractTransformer>? logger = null) : IContractTransformer
 {
     public async Task<bool> CanTransform(string walletIdentifier, ArkContract contract, ArkVtxo vtxo)
     {
@@ -19,7 +20,7 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IChainTime
 
         if (htlc.Preimage is not null && await addressProvider!.IsOurs(htlc.Receiver))
         {
-            return true;
+            return await walletProvider.GetSignerAsync(walletIdentifier) is not null;
         }
 
         var chainTime = await chainTimeProvider.GetChainTime();
@@ -27,7 +28,7 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IChainTime
         if (htlc.RefundLocktime.IsTimeLock &&
             htlc.RefundLocktime.Date < chainTime.Timestamp && await addressProvider!.IsOurs(htlc.Sender))
         {
-            return true;
+            return await walletProvider.GetSignerAsync(walletIdentifier) is not null;
         }
 
         return false;
@@ -41,6 +42,8 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IChainTime
 
         if (htlc!.Preimage is not null && await addressProvider!.IsOurs(htlc.Receiver))
         {
+            logger?.LogInformation("VHTLC claim: wallet={WalletId}, receiver={Receiver}, sender={Sender}, outpoint={Outpoint}",
+                walletIdentifier, htlc.Receiver, htlc.Sender, vtxo.OutPoint);
             return new ArkCoin(walletIdentifier, htlc, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight, vtxo.OutPoint, vtxo.TxOut, htlc.Receiver,
                 htlc.CreateClaimScript(), new WitScript(Op.GetPushOp(htlc.Preimage!)), null, null, vtxo.Swept);
         }
@@ -49,7 +52,9 @@ public class VHTLCContractTransformer(IWalletProvider walletProvider, IChainTime
         if (htlc.RefundLocktime.IsTimeLock &&
             htlc.RefundLocktime.Date < chainTime.Timestamp && await addressProvider!.IsOurs(htlc.Sender))
         {
-            return new ArkCoin(walletIdentifier, htlc, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight, vtxo.OutPoint, vtxo.TxOut, htlc.Receiver,
+            logger?.LogInformation("VHTLC refund: wallet={WalletId}, sender={Sender}, receiver={Receiver}, outpoint={Outpoint}, refundLocktime={RefundLocktime}",
+                walletIdentifier, htlc.Sender, htlc.Receiver, vtxo.OutPoint, htlc.RefundLocktime);
+            return new ArkCoin(walletIdentifier, htlc, vtxo.CreatedAt, vtxo.ExpiresAt, vtxo.ExpiresAtHeight, vtxo.OutPoint, vtxo.TxOut, htlc.Sender,
                 htlc.CreateRefundWithoutReceiverScript(), null, htlc.RefundLocktime, null, vtxo.Swept);
         }
 

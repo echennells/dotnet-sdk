@@ -195,7 +195,18 @@ public class IntentGenerationService(
 
             foreach (var intentSpec in intentSpecs)
             {
-                await GenerateIntentFromSpec(walletContracts.Key, intentSpec, token);
+                try
+                {
+                    await GenerateIntentFromSpec(walletContracts.Key, intentSpec, token);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    logger?.LogError(ex,
+                        "Failed to generate intent for wallet {WalletId} — skipping this wallet for this cycle",
+                        walletContracts.Key);
+                    break;
+                }
             }
         }
     }
@@ -296,13 +307,21 @@ public class IntentGenerationService(
 
         var addrProvider = await walletProvider.GetAddressProviderAsync(walletId, token)
                            ?? throw new InvalidOperationException("Wallet belonging to the intent was not found!");
+
+        var coinDescriptors = intentSpec.Coins
+            .Where(c => c.SignerDescriptor is not null)
+            .Select(c => new { c.Outpoint, Descriptor = c.SignerDescriptor!.ToString() })
+            .ToArray();
+        logger?.LogDebug("Intent coin descriptors for wallet {WalletId}: {CoinDescriptors}",
+            walletId, string.Join(", ", coinDescriptors.Select(c => $"{c.Outpoint}={c.Descriptor}")));
+
         var singingDescriptor =
-            intentSpec
-                .Coins
-                .Where(c => c.SignerDescriptor is not null)
-                .Select(c => c.SignerDescriptor)
-                .FirstOrDefault() ??
-            await addrProvider.GetNextSigningDescriptor(token);
+            coinDescriptors.Length > 0
+                ? intentSpec.Coins.First(c => c.SignerDescriptor is not null).SignerDescriptor!
+                : await addrProvider.GetNextSigningDescriptor(token);
+
+        logger?.LogDebug("Using signing descriptor for wallet {WalletId}: {SigningDescriptor}",
+            walletId, singingDescriptor.ToString());
 
         var (RegisterTx, Delete, RegisterMessage, DeleteMessage) = await CreateIntents(
             serverInfo.Network,
@@ -333,13 +352,18 @@ public class IntentGenerationService(
         IReadOnlyCollection<TxOut>? outputs, CancellationToken cancellationToken = default)
     {
         var firstInput = inputs.First();
+        var maxLockTime = inputs
+            .Where(c => c.LockTime is not null)
+            .Select(c => (uint)c.LockTime!.Value)
+            .DefaultIfEmpty(0U)
+            .Max();
         var toSignTx =
             CreatePsbt(
                 firstInput.ScriptPubKey,
                 network,
                 message,
                 2U,
-                0U,
+                maxLockTime,
                 0U,
                 [.. inputs]
             );
@@ -361,8 +385,21 @@ public class IntentGenerationService(
 
         foreach (var coin in inputs)
         {
+            logger?.LogDebug(
+                "Signing coin: WalletIdentifier={WalletIdentifier}, Outpoint={Outpoint}, " +
+                "SignerDescriptor={SignerDescriptor}, ContractType={ContractType}",
+                coin.WalletIdentifier, coin.Outpoint,
+                coin.SignerDescriptor?.ToString() ?? "(null)",
+                coin.Contract?.GetType().Name ?? "(null)");
+
             var signer = await walletProvider.GetSignerAsync(coin.WalletIdentifier, cancellationToken);
-            await PsbtHelpers.SignAndFillPsbt(signer!, coin, toSignTx, precomputedTransactionData, cancellationToken: cancellationToken);
+            if (signer is null)
+            {
+                logger?.LogError("No signer found for wallet {WalletIdentifier}, skipping coin {Outpoint}",
+                    coin.WalletIdentifier, coin.Outpoint);
+                continue;
+            }
+            await PsbtHelpers.SignAndFillPsbt(signer, coin, toSignTx, precomputedTransactionData, cancellationToken: cancellationToken);
         }
 
         return toSignTx;
