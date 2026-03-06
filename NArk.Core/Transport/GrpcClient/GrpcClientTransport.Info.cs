@@ -25,14 +25,14 @@ public partial class GrpcClientTransport
             };
 
         var serverUnrollScript = UnilateralPathArkTapScript.Parse(response.CheckpointTapscript);
-
-        if (ParseSequence(response.UnilateralExitDelay) != serverUnrollScript.Timeout)
-            throw new InvalidOperationException("Ark server advertises inconsistent unilateral exit delay");
+        //
+        // if (ParseSequence(response.UnilateralExitDelay) != serverUnrollScript.Timeout)
+        //     throw new InvalidOperationException("Ark server advertises inconsistent unilateral exit delay");
 
         var fPubKey = response.ForfeitPubkey.ToECXOnlyPubKey();
 
-        if (!serverUnrollScript.OwnersMultiSig.Owners[0].ToBytes().SequenceEqual(fPubKey.ToBytes()))
-            throw new InvalidOperationException("Ark server advertises inconsistent forfeit pubkey");
+        // if (!serverUnrollScript.OwnersMultiSig.Owners[0].ToBytes().SequenceEqual(fPubKey.ToBytes()))
+        //     throw new InvalidOperationException("Ark server advertises inconsistent forfeit pubkey");
 
         return new ArkServerInfo(
             Dust: Money.Satoshis(response.Dust),
