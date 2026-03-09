@@ -112,7 +112,7 @@ public class HierarchicalDeterministicAddressProvider(
         ArkContract[] inputs, OutputDescriptor serverKey, CancellationToken cancellationToken)
     {
         var inputScripts = inputs
-            .Select(c => c.GetArkAddress(serverKey).ScriptPubKey.ToHex())
+            .Select(c => c.GetScriptPubKeyHex())
             .Distinct()
             .ToArray();
         var storedContracts = await contractStorage.GetContracts(
@@ -127,7 +127,7 @@ public class HierarchicalDeterministicAddressProvider(
 
         foreach (var payment in inputs.OfType<ArkPaymentContract>())
         {
-            if (invoiceScripts.Contains(payment.GetArkAddress(serverKey).ScriptPubKey.ToHex()))
+            if (invoiceScripts.Contains(payment.GetScriptPubKeyHex()))
                 continue;
 
             if (await IsOurs(payment.User, cancellationToken))
@@ -138,7 +138,7 @@ public class HierarchicalDeterministicAddressProvider(
 
         foreach (var htlc in inputs.OfType<VHTLCContract>())
         {
-            if (invoiceScripts.Contains(htlc.GetArkAddress(serverKey).ScriptPubKey.ToHex()))
+            if (invoiceScripts.Contains(htlc.GetScriptPubKeyHex()))
                 continue;
 
             if (await IsOurs(htlc.Receiver, cancellationToken))

@@ -267,13 +267,12 @@ Boarding lets users move on-chain Bitcoin UTXOs into the Ark VTXO tree. The user
 ### 1. Derive a Boarding Address
 
 ```csharp
-var boardingContract = await contractService.DeriveContract(
+var boardingContract = (ArkBoardingContract)await contractService.DeriveContract(
     walletId,
     NextContractPurpose.Boarding);
 
 // Get the on-chain P2TR (bc1p...) address for the user to deposit BTC to
-var spendInfo = boardingContract.GetTaprootSpendInfo();
-var onchainAddress = spendInfo.OutputPubKey.GetAddress(network);
+var onchainAddress = boardingContract.GetOnchainAddress(network);
 ```
 
 ### 2. Sync On-chain UTXOs (Esplora)

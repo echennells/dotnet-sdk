@@ -45,9 +45,7 @@ public class BoardingTests
             ContractActivityState.Active);
 
         // Get the on-chain P2TR address from the boarding contract
-        var spendInfo = boardingContract.GetTaprootSpendInfo();
-        var scriptPubKey = spendInfo.OutputPubKey.GetAddress(info.Network);
-        var onchainAddress = scriptPubKey.ToString();
+        var onchainAddress = boardingContract.GetOnchainAddress(info.Network).ToString();
 
         Console.WriteLine($"[Boarding] Boarding P2TR address: {onchainAddress}");
 
@@ -102,7 +100,7 @@ public class BoardingTests
         Console.WriteLine($"[Boarding] Found vout={boardingVout} with amount={boardingAmount} sats");
 
         // --- 6. Manually insert the boarding UTXO as an ArkVtxo (Unrolled: true) ---
-        var boardingScriptHex = boardingContract.GetArkAddress().ScriptPubKey.ToHex();
+        var boardingScriptHex = boardingContract.GetScriptPubKeyHex();
         // ExpiresAt must be within the scheduler's Threshold (2 hours) to trigger intent generation.
         // Boarding UTXOs in production would have a real boarding_exit_delay-based expiry.
         var vtxo = new ArkVtxo(

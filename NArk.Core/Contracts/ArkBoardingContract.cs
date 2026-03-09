@@ -1,3 +1,4 @@
+using NArk.Abstractions;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
 using NArk.Abstractions.Scripts;
@@ -21,6 +22,20 @@ public class ArkBoardingContract(OutputDescriptor server, Sequence exitDelay, Ou
     public override string Type => ContractType;
     public const string ContractType = "Boarding";
 
+
+    /// <summary>
+    /// Boarding contracts use on-chain Bitcoin addresses, not Ark addresses.
+    /// Use <see cref="GetOnchainAddress"/> instead.
+    /// </summary>
+    public override ArkAddress GetArkAddress(OutputDescriptor? defaultServerKey = null)
+        => throw new InvalidOperationException(
+            "Boarding contracts use on-chain Bitcoin addresses. Use GetOnchainAddress(network) instead.");
+
+    /// <summary>
+    /// Returns the on-chain P2TR Bitcoin address (bc1p.../tb1p.../bcrt1p...) for this boarding contract.
+    /// </summary>
+    public BitcoinAddress GetOnchainAddress(Network network)
+        => GetTaprootSpendInfo().OutputPubKey.GetAddress(network);
 
     protected override IEnumerable<ScriptBuilder> GetScriptBuilders()
     {

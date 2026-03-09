@@ -52,10 +52,9 @@ public class BoardingContractTests
         var contract1 = new ArkBoardingContract(TestServerKey, DefaultExitDelay, TestUserKey);
         var contract2 = new ArkBoardingContract(TestServerKey, DefaultExitDelay, TestUserKey);
 
-        var address1 = contract1.GetArkAddress();
-        var address2 = contract2.GetArkAddress();
-
-        Assert.That(address1.ScriptPubKey.ToHex(), Is.EqualTo(address2.ScriptPubKey.ToHex()));
+        Assert.That(contract1.GetScriptPubKeyHex(), Is.EqualTo(contract2.GetScriptPubKeyHex()));
+        Assert.That(contract1.GetOnchainAddress(Network.RegTest).ToString(),
+            Is.EqualTo(contract2.GetOnchainAddress(Network.RegTest).ToString()));
     }
 
     [Test]
@@ -64,10 +63,7 @@ public class BoardingContractTests
         var contract1 = new ArkBoardingContract(TestServerKey, DefaultExitDelay, TestUserKey);
         var contract2 = new ArkBoardingContract(TestServerKey, DefaultExitDelay, DifferentUserKey);
 
-        var address1 = contract1.GetArkAddress();
-        var address2 = contract2.GetArkAddress();
-
-        Assert.That(address1.ScriptPubKey.ToHex(), Is.Not.EqualTo(address2.ScriptPubKey.ToHex()));
+        Assert.That(contract1.GetScriptPubKeyHex(), Is.Not.EqualTo(contract2.GetScriptPubKeyHex()));
     }
 
     [Test]
@@ -77,12 +73,32 @@ public class BoardingContractTests
         var entity = original.ToEntity("test-wallet");
 
         // Parse back from entity contract data
-        var parsed = ArkBoardingContract.Parse(entity.AdditionalData, Network.RegTest);
+        var parsed = (ArkBoardingContract)ArkBoardingContract.Parse(entity.AdditionalData, Network.RegTest);
 
-        var originalAddress = original.GetArkAddress();
-        var parsedAddress = parsed.GetArkAddress();
+        Assert.That(parsed.GetScriptPubKeyHex(), Is.EqualTo(original.GetScriptPubKeyHex()));
+        Assert.That(parsed.GetOnchainAddress(Network.RegTest).ToString(),
+            Is.EqualTo(original.GetOnchainAddress(Network.RegTest).ToString()));
+    }
 
-        Assert.That(parsedAddress.ScriptPubKey.ToHex(), Is.EqualTo(originalAddress.ScriptPubKey.ToHex()));
+    [Test]
+    public void BoardingContract_GetArkAddress_Throws()
+    {
+        var contract = new ArkBoardingContract(TestServerKey, DefaultExitDelay, TestUserKey);
+
+        Assert.Throws<InvalidOperationException>(() => contract.GetArkAddress());
+    }
+
+    [Test]
+    public void BoardingContract_GetOnchainAddress_ReturnsBech32m()
+    {
+        var contract = new ArkBoardingContract(TestServerKey, DefaultExitDelay, TestUserKey);
+
+        var address = contract.GetOnchainAddress(Network.RegTest);
+        Assert.That(address.ToString(), Does.StartWith("bcrt1p"));
+
+        var mainnetContract = new ArkBoardingContract(TestServerKey, DefaultExitDelay, TestUserKey);
+        var mainnetAddress = mainnetContract.GetOnchainAddress(Network.Main);
+        Assert.That(mainnetAddress.ToString(), Does.StartWith("bc1p"));
     }
 
     [Test]
