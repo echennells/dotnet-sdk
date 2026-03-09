@@ -1,5 +1,3 @@
-using System.Text.Json;
-using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Contracts;
@@ -44,12 +42,10 @@ public class BoardingTests
             NextContractPurpose.Boarding,
             ContractActivityState.Active);
 
-        // Get the on-chain P2TR address from the boarding contract
         var onchainAddress = boardingContract.GetOnchainAddress(info.Network).ToString();
-
         Console.WriteLine($"[Boarding] Boarding P2TR address: {onchainAddress}");
 
-        // --- 3. Fund the boarding address via bitcoin-cli sendtoaddress ---
+        // --- 3. Fund the boarding address via bitcoin-cli ---
         const long boardingAmountSats = 100_000;
         var btcAmount = (boardingAmountSats / 100_000_000m).ToString("0.########",
             System.Globalization.CultureInfo.InvariantCulture);
@@ -58,68 +54,34 @@ public class BoardingTests
             ["bitcoin-cli", "-rpcwallet=", "sendtoaddress", onchainAddress, btcAmount]);
         var fundingTxid = sendOutput.Trim();
         Console.WriteLine($"[Boarding] Funding txid: {fundingTxid}");
-
         Assert.That(fundingTxid, Is.Not.Empty, "sendtoaddress should return a txid");
 
-        // --- 4. Mine blocks to confirm the funding transaction ---
+        // --- 4. Mine blocks to confirm ---
         await DockerHelper.MineBlocks(6);
 
-        // --- 5. Find the correct vout for our boarding address ---
-        var txRawOutput = await DockerHelper.Exec("bitcoin",
-            ["bitcoin-cli", "-rpcwallet=", "gettransaction", fundingTxid]);
-        var txJson = JsonNode.Parse(txRawOutput);
+        // --- 5. Sync boarding UTXOs from Esplora (Chopsticks) ---
+        var utxoProvider = new EsploraBoardingUtxoProvider(SharedArkInfrastructure.ChopsticksEndpoint);
+        var syncService = new BoardingUtxoSyncService(
+            contracts, vtxoStorage, clientTransport, utxoProvider);
 
-        // Use decoderawtransaction to get exact vout details
-        var txHex = txJson?["hex"]?.GetValue<string>()
-                    ?? throw new InvalidOperationException(
-                        $"Could not get transaction hex from gettransaction. Output: {txRawOutput}");
-
-        var decodeOutput = await DockerHelper.Exec("bitcoin",
-            ["bitcoin-cli", "decoderawtransaction", txHex]);
-        var decodedTx = JsonNode.Parse(decodeOutput);
-        var vouts = decodedTx?["vout"]?.AsArray()
-                    ?? throw new InvalidOperationException(
-                        $"Could not parse vout from decoded transaction. Output: {decodeOutput}");
-
-        uint? boardingVout = null;
-        ulong? boardingAmount = null;
-        foreach (var vout in vouts)
+        // Chopsticks may need a moment to index — retry until the UTXO appears
+        ArkVtxo? syncedVtxo = null;
+        for (var i = 0; i < 10; i++)
         {
-            var spkAddress = vout?["scriptPubKey"]?["address"]?.GetValue<string>();
-            if (spkAddress == onchainAddress)
-            {
-                boardingVout = vout!["n"]!.GetValue<uint>();
-                // value is in BTC as a decimal
-                var valueBtc = vout["value"]!.GetValue<decimal>();
-                boardingAmount = (ulong)(valueBtc * 100_000_000m);
+            await syncService.SyncAsync();
+            var vtxos = await vtxoStorage.GetVtxos();
+            syncedVtxo = vtxos.FirstOrDefault(v => v.TransactionId == fundingTxid);
+            if (syncedVtxo is not null)
                 break;
-            }
+            await Task.Delay(TimeSpan.FromSeconds(2));
         }
 
-        Assert.That(boardingVout, Is.Not.Null, "Should find vout matching the boarding address");
-        Console.WriteLine($"[Boarding] Found vout={boardingVout} with amount={boardingAmount} sats");
+        Assert.That(syncedVtxo, Is.Not.Null, "BoardingUtxoSyncService should find the funded UTXO via Esplora");
+        Assert.That(syncedVtxo!.Unrolled, Is.True);
+        Assert.That(syncedVtxo.Amount, Is.EqualTo((ulong)boardingAmountSats));
+        Console.WriteLine($"[Boarding] Synced VTXO: {syncedVtxo.TransactionId[..8]}..:{syncedVtxo.TransactionOutputIndex}");
 
-        // --- 6. Manually insert the boarding UTXO as an ArkVtxo (Unrolled: true) ---
-        var boardingScriptHex = boardingContract.GetScriptPubKeyHex();
-        // ExpiresAt must be within the scheduler's Threshold (2 hours) to trigger intent generation.
-        // Boarding UTXOs in production would have a real boarding_exit_delay-based expiry.
-        var vtxo = new ArkVtxo(
-            Script: boardingScriptHex,
-            TransactionId: fundingTxid,
-            TransactionOutputIndex: boardingVout!.Value,
-            Amount: boardingAmount!.Value,
-            SpentByTransactionId: null,
-            SettledByTransactionId: null,
-            Swept: false,
-            CreatedAt: DateTimeOffset.UtcNow,
-            ExpiresAt: DateTimeOffset.UtcNow.AddMinutes(30),
-            ExpiresAtHeight: null,
-            Unrolled: true);
-        await vtxoStorage.UpsertVtxo(vtxo);
-
-        Console.WriteLine($"[Boarding] Inserted boarding VTXO: {fundingTxid}:{boardingVout}");
-
-        // --- 7. Setup services and generate intent ---
+        // --- 6. Setup services and generate intent ---
         var chainTimeProvider = new ChainTimeProvider(info.Network, SharedArkInfrastructure.NbxplorerEndpoint);
         var coinService = new CoinService(clientTransport, contracts,
         [
@@ -129,6 +91,8 @@ public class BoardingTests
 
         var intentStorage = new InMemoryIntentStorage();
 
+        // ThresholdHeight must cover the boarding exit delay (144 blocks) so the
+        // scheduler picks up boarding VTXOs whose ExpiresAtHeight is ~144 blocks away.
         var scheduler = new SimpleIntentScheduler(
             new DefaultFeeEstimator(clientTransport, chainTimeProvider),
             clientTransport,
@@ -136,8 +100,8 @@ public class BoardingTests
             chainTimeProvider,
             new OptionsWrapper<SimpleIntentSchedulerOptions>(new SimpleIntentSchedulerOptions
             {
-                Threshold = TimeSpan.FromHours(2),
-                ThresholdHeight = 2000
+                Threshold = TimeSpan.FromHours(25),
+                ThresholdHeight = 200
             }));
 
         var newIntentTcs = new TaskCompletionSource();
@@ -179,7 +143,7 @@ public class BoardingTests
         await newIntentTcs.Task.WaitAsync(TimeSpan.FromMinutes(1));
         Console.WriteLine("[Boarding] Intent generated");
 
-        // --- 8. Submit intent and run batch ---
+        // --- 7. Submit intent and run batch ---
         await using var intentSync =
             new IntentSynchronizationService(intentStorage, clientTransport, safetyService);
         await intentSync.StartAsync(CancellationToken.None);
@@ -199,7 +163,7 @@ public class BoardingTests
         await newSuccessBatch.Task.WaitAsync(TimeSpan.FromMinutes(2));
         Console.WriteLine("[Boarding] Batch succeeded");
 
-        // --- 9. Verify: batch succeeded and we have a new (non-boarding) VTXO ---
+        // --- 8. Verify: batch succeeded and we have a new (non-boarding) VTXO ---
         var allVtxos = await vtxoStorage.GetVtxos();
         var unspentVtxos = allVtxos.Where(v => !v.IsSpent()).ToList();
 
@@ -211,7 +175,6 @@ public class BoardingTests
                 $"amount={v.Amount} spent={v.IsSpent()} unrolled={v.Unrolled}");
         }
 
-        // The original boarding VTXO should be spent, and we should have at least one new VTXO
         Assert.That(unspentVtxos, Has.Count.GreaterThanOrEqualTo(1),
             "Should have at least one unspent VTXO after boarding batch");
     }

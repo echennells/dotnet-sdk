@@ -1,8 +1,6 @@
-using System.Net;
-using System.Text;
-using System.Text.Json;
 using NArk.Abstractions.Contracts;
 using NArk.Abstractions.Extensions;
+using NArk.Abstractions.Services;
 using NArk.Abstractions.VTXOs;
 using NArk.Core;
 using NArk.Core.Contracts;
@@ -21,6 +19,7 @@ public class BoardingUtxoSyncServiceTests
     private IContractStorage _contractStorage = null!;
     private IVtxoStorage _vtxoStorage = null!;
     private IClientTransport _clientTransport = null!;
+    private IBoardingUtxoProvider _utxoProvider = null!;
 
     private static readonly OutputDescriptor TestServerKey =
         KeyExtensions.ParseOutputDescriptor(
@@ -40,6 +39,7 @@ public class BoardingUtxoSyncServiceTests
         _contractStorage = Substitute.For<IContractStorage>();
         _vtxoStorage = Substitute.For<IVtxoStorage>();
         _clientTransport = Substitute.For<IClientTransport>();
+        _utxoProvider = Substitute.For<IBoardingUtxoProvider>();
 
         _clientTransport.GetServerInfoAsync(Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(CreateServerInfo()));
@@ -76,34 +76,28 @@ public class BoardingUtxoSyncServiceTests
     [Test]
     public async Task SyncAsync_ConfirmedUtxo_IsUpsertedWithCorrectFields()
     {
-        // Arrange
         var contract = new ArkBoardingContract(TestServerKey, BoardingExitDelay, TestUserKey);
         var entity = contract.ToEntity("test-wallet");
 
         SetupContractStorage(entity);
         SetupVtxoStorage();
 
-        var utxoJson = JsonSerializer.Serialize(new[]
-        {
-            new
-            {
-                txid = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
-                vout = 0,
-                value = 100000L,
-                status = new { confirmed = true, block_height = 800000L, block_time = 1700000000L }
-            }
-        });
-
-        var handler = new FakeHttpMessageHandler(utxoJson);
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:3000/") };
+        _utxoProvider.GetUtxosAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns([
+                new BoardingUtxo(
+                    Txid: "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+                    Vout: 0,
+                    Amount: 100000,
+                    Confirmed: true,
+                    BlockHeight: 800000,
+                    BlockTime: 1700000000)
+            ]);
 
         var service = new BoardingUtxoSyncService(
-            _contractStorage, _vtxoStorage, _clientTransport, httpClient);
+            _contractStorage, _vtxoStorage, _clientTransport, _utxoProvider);
 
-        // Act
         await service.SyncAsync(CancellationToken.None);
 
-        // Assert
         await _vtxoStorage.Received(1).UpsertVtxo(
             Arg.Is<ArkVtxo>(v =>
                 v.Script == entity.Script &&
@@ -119,34 +113,28 @@ public class BoardingUtxoSyncServiceTests
     [Test]
     public async Task SyncAsync_UnconfirmedUtxo_IsSkipped()
     {
-        // Arrange
         var contract = new ArkBoardingContract(TestServerKey, BoardingExitDelay, TestUserKey);
         var entity = contract.ToEntity("test-wallet");
 
         SetupContractStorage(entity);
         SetupVtxoStorage();
 
-        var utxoJson = JsonSerializer.Serialize(new[]
-        {
-            new
-            {
-                txid = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
-                vout = 0,
-                value = 50000L,
-                status = new { confirmed = false, block_height = 0L, block_time = 0L }
-            }
-        });
-
-        var handler = new FakeHttpMessageHandler(utxoJson);
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:3000/") };
+        _utxoProvider.GetUtxosAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns([
+                new BoardingUtxo(
+                    Txid: "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+                    Vout: 0,
+                    Amount: 50000,
+                    Confirmed: false,
+                    BlockHeight: 0,
+                    BlockTime: 0)
+            ]);
 
         var service = new BoardingUtxoSyncService(
-            _contractStorage, _vtxoStorage, _clientTransport, httpClient);
+            _contractStorage, _vtxoStorage, _clientTransport, _utxoProvider);
 
-        // Act
         await service.SyncAsync(CancellationToken.None);
 
-        // Assert - no upsert should have happened
         await _vtxoStorage.DidNotReceive().UpsertVtxo(
             Arg.Any<ArkVtxo>(), Arg.Any<CancellationToken>());
     }
@@ -154,7 +142,6 @@ public class BoardingUtxoSyncServiceTests
     [Test]
     public async Task SyncAsync_AlreadyStoredUtxo_IsNotDuplicated()
     {
-        // Arrange
         var contract = new ArkBoardingContract(TestServerKey, BoardingExitDelay, TestUserKey);
         var entity = contract.ToEntity("test-wallet");
         const string txid = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
@@ -175,27 +162,23 @@ public class BoardingUtxoSyncServiceTests
         SetupContractStorage(entity);
         SetupVtxoStorage(existingVtxo);
 
-        var utxoJson = JsonSerializer.Serialize(new[]
-        {
-            new
-            {
-                txid,
-                vout = 0,
-                value = 100000L,
-                status = new { confirmed = true, block_height = 800000L, block_time = 1700000000L }
-            }
-        });
-
-        var handler = new FakeHttpMessageHandler(utxoJson);
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:3000/") };
+        _utxoProvider.GetUtxosAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns([
+                new BoardingUtxo(
+                    Txid: txid,
+                    Vout: 0,
+                    Amount: 100000,
+                    Confirmed: true,
+                    BlockHeight: 800000,
+                    BlockTime: 1700000000)
+            ]);
 
         var service = new BoardingUtxoSyncService(
-            _contractStorage, _vtxoStorage, _clientTransport, httpClient);
+            _contractStorage, _vtxoStorage, _clientTransport, _utxoProvider);
 
-        // Act
         await service.SyncAsync(CancellationToken.None);
 
-        // Assert - UpsertVtxo is called exactly once (the confirmed UTXO),
+        // UpsertVtxo is called exactly once (the confirmed UTXO),
         // but no "spent" upsert because the existing VTXO is still onchain
         await _vtxoStorage.Received(1).UpsertVtxo(
             Arg.Is<ArkVtxo>(v =>
@@ -207,7 +190,6 @@ public class BoardingUtxoSyncServiceTests
     [Test]
     public async Task SyncAsync_SpentUtxo_IsMarkedAsSpent()
     {
-        // Arrange
         var contract = new ArkBoardingContract(TestServerKey, BoardingExitDelay, TestUserKey);
         var entity = contract.ToEntity("test-wallet");
 
@@ -227,19 +209,15 @@ public class BoardingUtxoSyncServiceTests
         SetupContractStorage(entity);
         SetupVtxoStorage(existingVtxo);
 
-        // Esplora returns empty - the UTXO has been spent
-        var utxoJson = JsonSerializer.Serialize(Array.Empty<object>());
-
-        var handler = new FakeHttpMessageHandler(utxoJson);
-        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:3000/") };
+        // Provider returns empty — the UTXO has been spent
+        _utxoProvider.GetUtxosAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Array.Empty<BoardingUtxo>());
 
         var service = new BoardingUtxoSyncService(
-            _contractStorage, _vtxoStorage, _clientTransport, httpClient);
+            _contractStorage, _vtxoStorage, _clientTransport, _utxoProvider);
 
-        // Act
         await service.SyncAsync(CancellationToken.None);
 
-        // Assert - should upsert with SpentByTransactionId set
         await _vtxoStorage.Received(1).UpsertVtxo(
             Arg.Is<ArkVtxo>(v =>
                 v.TransactionId == "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" &&
@@ -268,29 +246,5 @@ public class BoardingUtxoSyncServiceTests
             CheckpointTapScript: new NArk.Core.Scripts.UnilateralPathArkTapScript(
                 new Sequence(144), emptyMultisig),
             FeeTerms: new ArkOperatorFeeTerms("1", "0", "0", "0", "0"));
-    }
-
-    /// <summary>
-    /// Simple fake HTTP handler that returns a canned response for any request.
-    /// </summary>
-    private class FakeHttpMessageHandler : HttpMessageHandler
-    {
-        private readonly string _responseBody;
-        private readonly HttpStatusCode _statusCode;
-
-        public FakeHttpMessageHandler(string responseBody, HttpStatusCode statusCode = HttpStatusCode.OK)
-        {
-            _responseBody = responseBody;
-            _statusCode = statusCode;
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            var response = new HttpResponseMessage(_statusCode)
-            {
-                Content = new StringContent(_responseBody, Encoding.UTF8, "application/json")
-            };
-            return Task.FromResult(response);
-        }
     }
 }

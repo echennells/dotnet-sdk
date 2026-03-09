@@ -1,7 +1,6 @@
-using System.Net.Http.Json;
-using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using NArk.Abstractions.Contracts;
+using NArk.Abstractions.Services;
 using NArk.Abstractions.VTXOs;
 using NArk.Core.Contracts;
 using NArk.Core.Transport;
@@ -10,39 +9,29 @@ using NBitcoin;
 namespace NArk.Core.Services;
 
 /// <summary>
-/// Synchronizes boarding UTXOs from the Bitcoin blockchain via Esplora API.
-/// Queries onchain UTXOs for boarding contract addresses and upserts them into VTXO storage.
+/// Synchronizes boarding UTXOs from the Bitcoin blockchain via an <see cref="IBoardingUtxoProvider"/>.
+/// Queries on-chain UTXOs for boarding contract addresses and upserts them into VTXO storage.
 /// </summary>
 public class BoardingUtxoSyncService
 {
     private readonly IContractStorage _contractStorage;
     private readonly IVtxoStorage _vtxoStorage;
     private readonly IClientTransport _clientTransport;
-    private readonly HttpClient _httpClient;
+    private readonly IBoardingUtxoProvider _utxoProvider;
     private readonly ILogger<BoardingUtxoSyncService>? _logger;
 
     public BoardingUtxoSyncService(
         IContractStorage contractStorage,
         IVtxoStorage vtxoStorage,
         IClientTransport clientTransport,
-        HttpClient httpClient,
+        IBoardingUtxoProvider utxoProvider,
         ILogger<BoardingUtxoSyncService>? logger = null)
     {
         _contractStorage = contractStorage;
         _vtxoStorage = vtxoStorage;
         _clientTransport = clientTransport;
-        _httpClient = httpClient;
+        _utxoProvider = utxoProvider;
         _logger = logger;
-    }
-
-    public BoardingUtxoSyncService(
-        IContractStorage contractStorage,
-        IVtxoStorage vtxoStorage,
-        IClientTransport clientTransport,
-        Uri esploraBaseUri,
-        ILogger<BoardingUtxoSyncService>? logger = null)
-        : this(contractStorage, vtxoStorage, clientTransport, new HttpClient { BaseAddress = esploraBaseUri }, logger)
-    {
     }
 
     public async Task SyncAsync(CancellationToken cancellationToken = default)
@@ -93,17 +82,9 @@ public class BoardingUtxoSyncService
         }
 
         var addressStr = address.ToString();
-        _logger?.LogDebug("Querying Esplora for UTXOs at address {Address}", addressStr);
+        _logger?.LogDebug("Querying UTXOs at address {Address}", addressStr);
 
-        // Query Esplora for UTXOs
-        var utxos = await _httpClient.GetFromJsonAsync<EsploraUtxo[]>(
-            $"address/{addressStr}/utxo", cancellationToken);
-
-        if (utxos is null)
-        {
-            _logger?.LogWarning("Esplora returned null for address {Address}", addressStr);
-            return;
-        }
+        var utxos = await _utxoProvider.GetUtxosAsync(addressStr, cancellationToken);
 
         // Get existing VTXOs for this script to detect spent ones
         var existingVtxos = await _vtxoStorage.GetVtxos(
@@ -115,7 +96,7 @@ public class BoardingUtxoSyncService
         foreach (var utxo in utxos)
         {
             // Skip unconfirmed UTXOs
-            if (utxo.Status is not { Confirmed: true })
+            if (!utxo.Confirmed)
             {
                 _logger?.LogDebug("Skipping unconfirmed UTXO {Txid}:{Vout}", utxo.Txid, utxo.Vout);
                 continue;
@@ -123,8 +104,8 @@ public class BoardingUtxoSyncService
 
             onchainOutpoints.Add($"{utxo.Txid}:{utxo.Vout}");
 
-            var createdAt = utxo.Status.BlockTime > 0
-                ? DateTimeOffset.FromUnixTimeSeconds(utxo.Status.BlockTime)
+            var createdAt = utxo.BlockTime > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(utxo.BlockTime)
                 : DateTimeOffset.UtcNow;
 
             var expiresAt = ComputeExpiresAt(createdAt, boardingExitDelay);
@@ -132,24 +113,24 @@ public class BoardingUtxoSyncService
             var arkVtxo = new ArkVtxo(
                 Script: contractEntity.Script,
                 TransactionId: utxo.Txid,
-                TransactionOutputIndex: (uint)utxo.Vout,
-                Amount: (ulong)utxo.Value,
+                TransactionOutputIndex: utxo.Vout,
+                Amount: utxo.Amount,
                 SpentByTransactionId: null,
                 SettledByTransactionId: null,
                 Swept: false,
                 CreatedAt: createdAt,
                 ExpiresAt: expiresAt,
-                ExpiresAtHeight: utxo.Status.BlockHeight > 0
-                    ? (uint)(utxo.Status.BlockHeight + GetBlockCount(boardingExitDelay))
+                ExpiresAtHeight: utxo.BlockHeight > 0
+                    ? (uint)(utxo.BlockHeight + GetBlockCount(boardingExitDelay))
                     : null,
                 Unrolled: true);
 
             await _vtxoStorage.UpsertVtxo(arkVtxo, cancellationToken);
             _logger?.LogDebug("Upserted boarding VTXO {Txid}:{Vout} ({Amount} sats)",
-                utxo.Txid, utxo.Vout, utxo.Value);
+                utxo.Txid, utxo.Vout, utxo.Amount);
         }
 
-        // Mark spent: existing unspent VTXOs that are no longer in the Esplora response
+        // Mark spent: existing unspent VTXOs that are no longer in the provider response
         foreach (var existing in existingVtxos)
         {
             if (existing.IsSpent())
@@ -206,32 +187,5 @@ public class BoardingUtxoSyncService
         }
 
         return sequence.Value & 0x0000FFFF;
-    }
-
-    internal class EsploraUtxo
-    {
-        [JsonPropertyName("txid")]
-        public string Txid { get; set; } = string.Empty;
-
-        [JsonPropertyName("vout")]
-        public int Vout { get; set; }
-
-        [JsonPropertyName("value")]
-        public long Value { get; set; }
-
-        [JsonPropertyName("status")]
-        public EsploraUtxoStatus? Status { get; set; }
-    }
-
-    internal class EsploraUtxoStatus
-    {
-        [JsonPropertyName("confirmed")]
-        public bool Confirmed { get; set; }
-
-        [JsonPropertyName("block_height")]
-        public long BlockHeight { get; set; }
-
-        [JsonPropertyName("block_time")]
-        public long BlockTime { get; set; }
     }
 }

@@ -275,16 +275,23 @@ var boardingContract = (ArkBoardingContract)await contractService.DeriveContract
 var onchainAddress = boardingContract.GetOnchainAddress(network);
 ```
 
-### 2. Sync On-chain UTXOs (Esplora)
+### 2. Sync On-chain UTXOs
 
-`BoardingUtxoSyncService` polls an Esplora API for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It is **not auto-registered** — create an instance and call `SyncAsync()` on a timer:
+`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It takes an `IBoardingUtxoProvider` — choose **Esplora** or **NBXplorer** depending on your setup:
 
 ```csharp
-var syncService = new BoardingUtxoSyncService(
-    contractStorage, vtxoStorage, clientTransport,
+// Option A: Esplora (mempool.space, Chopsticks, etc.)
+IBoardingUtxoProvider utxoProvider = new EsploraBoardingUtxoProvider(
     new Uri("https://mempool.space/api/"));
 
-// Poll periodically (e.g. every 30s)
+// Option B: NBXplorer (BTCPay Server, self-hosted)
+IBoardingUtxoProvider utxoProvider = new NBXplorerBoardingUtxoProvider(
+    network, new Uri("http://localhost:32838"));
+
+// Create the sync service and poll periodically
+var syncService = new BoardingUtxoSyncService(
+    contractStorage, vtxoStorage, clientTransport, utxoProvider);
+
 while (!ct.IsCancellationRequested)
 {
     await syncService.SyncAsync(ct);
