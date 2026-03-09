@@ -28,10 +28,44 @@ public class NSecWalletSigner(ECPrivKey privateKey, ILogger? logger = null) : IA
         return signer;
     }
 
+    public Task<ECPubKey> GetPubKey(OutputDescriptor descriptor, CancellationToken cancellationToken = default)
+    {
+        var descriptorXOnly = descriptor.Extract().XOnlyPubKey;
+        var descriptorPubKey = descriptor.ToPubKey();
+
+        logger?.LogInformation(
+            "GetPubKey called. Descriptor={Descriptor}, DescriptorPubKey={DescriptorPubKey}, " +
+            "DescriptorXOnly={DescriptorXOnly}, SignerPubKey={SignerPubKey}, SignerXOnly={SignerXOnly}",
+            descriptor.ToString(),
+            Convert.ToHexString(descriptorPubKey.ToBytes()).ToLowerInvariant(),
+            Convert.ToHexString(descriptorXOnly.ToBytes()).ToLowerInvariant(),
+            Convert.ToHexString(_publicKey.ToBytes()).ToLowerInvariant(),
+            Convert.ToHexString(_xOnlyPubKey.ToBytes()).ToLowerInvariant());
+
+        if (!descriptorXOnly.ToBytes().SequenceEqual(_xOnlyPubKey.ToBytes()))
+            throw new InvalidOperationException(
+                $"Descriptor does not belong to this wallet. " +
+                $"DescriptorXOnly={Convert.ToHexString(descriptorXOnly.ToBytes()).ToLowerInvariant()}, " +
+                $"SignerXOnly={Convert.ToHexString(_xOnlyPubKey.ToBytes()).ToLowerInvariant()}");
+
+        logger?.LogInformation(
+            "GetPubKey returning actual signer pubkey={SignerPubKey} (descriptor would have given {DescriptorPubKey})",
+            Convert.ToHexString(_publicKey.ToBytes()).ToLowerInvariant(),
+            Convert.ToHexString(descriptorPubKey.ToBytes()).ToLowerInvariant());
+
+        return Task.FromResult(_publicKey);
+    }
+
     public Task<MusigPartialSignature> SignMusig(OutputDescriptor descriptor, MusigContext context, MusigPrivNonce nonce,
         CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(context.Sign(privateKey, nonce));
+        logger?.LogInformation(
+            "SignMusig called. Descriptor={Descriptor}, SignerCompressed={SignerCompressed}",
+            descriptor.ToString(),
+            Convert.ToHexString(_publicKey.ToBytes()).ToLowerInvariant());
+        var sig = context.Sign(privateKey, nonce);
+        logger?.LogInformation("SignMusig produced partial signature successfully");
+        return Task.FromResult(sig);
     }
 
     public Task<(ECXOnlyPubKey, SecpSchnorrSignature)> Sign(OutputDescriptor descriptor, uint256 hash, CancellationToken cancellationToken = default)
@@ -73,6 +107,12 @@ public class NSecWalletSigner(ECPrivKey privateKey, ILogger? logger = null) : IA
 
     public Task<MusigPrivNonce> GenerateNonces(OutputDescriptor descriptor, MusigContext context, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(context.GenerateNonce(privateKey));
+        logger?.LogInformation(
+            "GenerateNonces called. Descriptor={Descriptor}, SignerCompressed={SignerCompressed}",
+            descriptor.ToString(),
+            Convert.ToHexString(_publicKey.ToBytes()).ToLowerInvariant());
+        var nonce = context.GenerateNonce(privateKey);
+        logger?.LogInformation("GenerateNonces produced nonce successfully");
+        return Task.FromResult(nonce);
     }
 }

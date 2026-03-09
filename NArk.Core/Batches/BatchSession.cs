@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using NArk.Abstractions;
 using NArk.Abstractions.Batches;
 using NArk.Abstractions.Batches.ServerEvents;
@@ -30,7 +31,8 @@ public class BatchSession(
     Network network,
     ArkIntent arkIntent,
     ArkCoin[] ins,
-    BatchStartedEvent batchStartedEvent)
+    BatchStartedEvent batchStartedEvent,
+    ILogger? logger = null)
 {
     private readonly OutputDescriptor _outputDescriptor = OutputDescriptor.Parse(arkIntent.SignerDescriptor, network);
     private readonly string _batchId = batchStartedEvent.Id;
@@ -164,15 +166,26 @@ public class BatchSession(
 
 
         // Create a signing session
-        var session = new TreeSignerSession(arkIntent.WalletId,walletProvider, vtxoGraph, sweepTapTreeRoot, _outputDescriptor, sharedOutput.Value);
+        var session = new TreeSignerSession(arkIntent.WalletId,walletProvider, vtxoGraph, sweepTapTreeRoot, _outputDescriptor, sharedOutput.Value, logger);
 
         // Generate and submit nonces
         var nonces = await session.GetNoncesAsync(cancellationToken);
-        var pubKey = _outputDescriptor.Extract().PubKey;
+
+        // Use the signer's actual pubkey (with correct parity) to identify ourselves to the server.
+        // The server registered our cosigner key with the correct parity from IntentGenerationService,
+        // so we must match that here. descriptor.Extract().PubKey would lose parity through tr() roundtrip.
+        var signer = await walletProvider.GetSignerAsync(arkIntent.WalletId, cancellationToken)
+                     ?? throw new InvalidOperationException("Signer not found for wallet");
+        var signerPubKey = await signer.GetPubKey(_outputDescriptor, cancellationToken);
+
+        logger?.LogInformation(
+            "SubmitTreeNonces: using signerPubKey={SignerPubKey} (descriptorPubKey would have been {DescriptorPubKey})",
+            Convert.ToHexString(signerPubKey.ToBytes()).ToLowerInvariant(),
+            Convert.ToHexString(_outputDescriptor.Extract().PubKey!.ToBytes()).ToLowerInvariant());
 
         var request = new SubmitTreeNoncesRequest(
             signingEvent.Id,
-            pubKey!.ToBytes().ToHexStringLower(),
+            signerPubKey.ToBytes().ToHexStringLower(),
             nonces.ToDictionary(pair => pair.Key.ToString(), pair => pair.Value.ToBytes().ToHexStringLower())
         );
 
@@ -195,10 +208,17 @@ public class BatchSession(
         // Sign and submit signatures
         var signatures = await session.SignAsync(cancellationToken);
 
-        var pubKey = OutputDescriptorHelpers.Extract(_outputDescriptor).PubKey!;
+        // Use the signer's actual pubkey (with correct parity) to identify ourselves to the server.
+        var signer = await walletProvider.GetSignerAsync(arkIntent.WalletId, cancellationToken)
+                     ?? throw new InvalidOperationException("Signer not found for wallet");
+        var signerPubKey = await signer.GetPubKey(_outputDescriptor, cancellationToken);
+
+        logger?.LogInformation(
+            "SubmitTreeSignatures: using signerPubKey={SignerPubKey}",
+            Convert.ToHexString(signerPubKey.ToBytes()).ToLowerInvariant());
 
         await clientTransport.SubmitTreeSignaturesRequest(
-            new SubmitTreeSignaturesRequest(_batchId, pubKey.ToBytes().ToHexStringLower(),
+            new SubmitTreeSignaturesRequest(_batchId, signerPubKey.ToBytes().ToHexStringLower(),
                 signatures.ToDictionary(pair => pair.Key.ToString(),
                     pair => pair.Value.ToBytes().ToHexStringLower())), cancellationToken);
     }
