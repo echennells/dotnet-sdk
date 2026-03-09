@@ -69,7 +69,15 @@ public class HierarchicalDeterministicAddressProvider(
         var info = await transport.GetServerInfoAsync(cancellationToken);
         ArkContract? result = null;
 
-        if (purpose == NextContractPurpose.SendToSelf && sweepDestination is not null)
+        if (purpose == NextContractPurpose.Boarding)
+        {
+            result = new ArkBoardingContract(
+                info.SignerKey,
+                info.BoardingExit,
+                await GetNextSigningDescriptor(cancellationToken)
+            );
+        }
+        else if (purpose == NextContractPurpose.SendToSelf && sweepDestination is not null)
         {
             result = new UnknownArkContract(sweepDestination, info.SignerKey, info.Network.ChainName == ChainName.Mainnet);
             activityState = ContractActivityState.Inactive;
@@ -104,7 +112,7 @@ public class HierarchicalDeterministicAddressProvider(
         ArkContract[] inputs, OutputDescriptor serverKey, CancellationToken cancellationToken)
     {
         var inputScripts = inputs
-            .Select(c => c.GetArkAddress(serverKey).ScriptPubKey.ToHex())
+            .Select(c => c.GetScriptPubKey().ToHex())
             .Distinct()
             .ToArray();
         var storedContracts = await contractStorage.GetContracts(
@@ -119,7 +127,7 @@ public class HierarchicalDeterministicAddressProvider(
 
         foreach (var payment in inputs.OfType<ArkPaymentContract>())
         {
-            if (invoiceScripts.Contains(payment.GetArkAddress(serverKey).ScriptPubKey.ToHex()))
+            if (invoiceScripts.Contains(payment.GetScriptPubKey().ToHex()))
                 continue;
 
             if (await IsOurs(payment.User, cancellationToken))
@@ -130,7 +138,7 @@ public class HierarchicalDeterministicAddressProvider(
 
         foreach (var htlc in inputs.OfType<VHTLCContract>())
         {
-            if (invoiceScripts.Contains(htlc.GetArkAddress(serverKey).ScriptPubKey.ToHex()))
+            if (invoiceScripts.Contains(htlc.GetScriptPubKey().ToHex()))
                 continue;
 
             if (await IsOurs(htlc.Receiver, cancellationToken))

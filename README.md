@@ -260,6 +260,76 @@ var btcTxId = await onchainService.InitiateCollaborativeExit(
     new ArkTxOut(bitcoinAddress, Money.Satoshis(50_000)));
 ```
 
+## Boarding (On-chain → Ark)
+
+Boarding lets users move on-chain Bitcoin UTXOs into the Ark VTXO tree. The user deposits BTC to a boarding address (a P2TR output with a collaborative spend path and a CSV-locked unilateral exit). Once confirmed, the boarding UTXO is automatically picked up by the intent/batch pipeline — no manual intervention needed.
+
+### 1. Derive a Boarding Address
+
+```csharp
+var boardingContract = (ArkBoardingContract)await contractService.DeriveContract(
+    walletId,
+    NextContractPurpose.Boarding);
+
+// Get the on-chain P2TR (bc1p...) address for the user to deposit BTC to
+var onchainAddress = boardingContract.GetOnchainAddress(network);
+```
+
+### 2. Sync On-chain UTXOs
+
+`BoardingUtxoSyncService` polls a blockchain indexer for confirmed UTXOs at your boarding addresses and upserts them into VTXO storage. It takes an `IBoardingUtxoProvider` — choose **Esplora** or **NBXplorer** depending on your setup:
+
+```csharp
+// Option A: Esplora (mempool.space, Chopsticks, etc.)
+IBoardingUtxoProvider utxoProvider = new EsploraBoardingUtxoProvider(
+    new Uri("https://mempool.space/api/"));
+
+// Option B: NBXplorer (BTCPay Server, self-hosted)
+IBoardingUtxoProvider utxoProvider = new NBXplorerBoardingUtxoProvider(
+    network, new Uri("http://localhost:32838"));
+
+// Create the sync service and poll periodically
+var syncService = new BoardingUtxoSyncService(
+    contractStorage, vtxoStorage, clientTransport, utxoProvider);
+
+while (!ct.IsCancellationRequested)
+{
+    await syncService.SyncAsync(ct);
+    await Task.Delay(TimeSpan.FromSeconds(30), ct);
+}
+```
+
+Once a boarding UTXO is synced, the SDK's `IntentGenerationService` automatically creates an intent for it. The next batch round moves it into the VTXO tree.
+
+### 3. Handle Expired Boarding UTXOs (Optional)
+
+If a boarding UTXO isn't batched before its CSV timelock expires, `OnchainSweepService` detects it. Register a custom `IOnchainSweepHandler` to control what happens:
+
+```csharp
+public class MySweepHandler : IOnchainSweepHandler
+{
+    public async Task<bool> HandleExpiredUtxoAsync(
+        string walletId, ArkVtxo vtxo, ArkContractEntity contract,
+        CancellationToken ct)
+    {
+        // Sweep to a new boarding address, cold storage, etc.
+        return true; // true = handled, false = fall back to default
+    }
+}
+
+services.AddSingleton<IOnchainSweepHandler, MySweepHandler>();
+```
+
+Then call `SweepExpiredUtxosAsync()` periodically:
+
+```csharp
+var sweepService = new OnchainSweepService(
+    vtxoStorage, contractStorage, chainTimeProvider,
+    contractService, walletProvider, sweepHandler);
+
+await sweepService.SweepExpiredUtxosAsync(ct);
+```
+
 ## Contracts
 
 Derive receiving addresses and manage contracts:
