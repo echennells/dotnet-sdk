@@ -5,11 +5,12 @@ namespace NArk.Tests.End2End.Delegation;
 [SetUpFixture]
 public class SharedDelegationInfrastructure
 {
-    /// <summary>REST endpoint for health checks and wallet operations.</summary>
-    public static readonly Uri DelegatorRestEndpoint = new("http://localhost:7011");
+    /// <summary>REST endpoint for wallet operations (port 7001 internal → 7011 external).</summary>
+    public static readonly Uri DelegatorWalletEndpoint = new("http://localhost:7011");
 
-    /// <summary>gRPC endpoint for GrpcDelegatorProvider.</summary>
-    public static readonly Uri DelegatorGrpcEndpoint = new("http://localhost:7010");
+    /// <summary>gRPC + delegator REST endpoint (port 7000 internal → 7010 external).
+    /// Fulmine v0.3.15 runs the delegator HTTP interface on the same port as gRPC.</summary>
+    public static readonly Uri DelegatorEndpoint = new("http://localhost:7010");
 
     [OneTimeSetUp]
     public async Task GlobalSetup()
@@ -18,11 +19,11 @@ public class SharedDelegationInfrastructure
 
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
-        // Verify arkd is running (delegation tests also need it)
+        // Verify arkd and delegator are running
         foreach (var (name, url) in new[]
                  {
                      ("arkd", $"{SharedArkInfrastructure.ArkdEndpoint}/v1/info"),
-                     ("delegator", $"{DelegatorRestEndpoint}/api/v1/wallet/status")
+                     ("delegator wallet", $"{DelegatorWalletEndpoint}/api/v1/wallet/status")
                  })
         {
             try

@@ -6,72 +6,58 @@ option csharp_namespace = "Fulmine.V1";
 
 import "google/api/annotations.proto";
 
-// DelegatorService defines the public RPCs that clients use to delegate
-// automatic VTXO rollover to a Fulmine delegator instance.
+// DelegatorService defines the public RPCs that clients can consume to delegate the refresh of
+// their VTXO set.
 service DelegatorService {
-  // GetDelegatePublicKey returns the delegator's compressed public key.
-  rpc GetDelegatePublicKey(GetDelegatePublicKeyRequest) returns (GetDelegatePublicKeyResponse) {
+  // GetDelegatorInfo returns info about the delegator contract.
+  rpc GetDelegatorInfo(GetDelegatorInfoRequest) returns (GetDelegatorInfoResponse) {
     option (google.api.http) = {
-      get: "/v1/delegate/pubkey"
+      get: "/v1/delegator/info"
     };
   };
 
-  // WatchAddressForRollover registers an Ark address for automatic rollover
-  // before its VTXOs expire. The delegator will participate in batch rounds
-  // on behalf of the owner.
-  rpc WatchAddressForRollover(WatchAddressForRolloverRequest) returns (WatchAddressForRolloverResponse) {
+  // Delegate is consumed by clients to request the delegation of the refresh of their VTXOs.
+  rpc Delegate(DelegateRequest) returns (DelegateResponse) {
     option (google.api.http) = {
-      post: "/v1/delegate/watch"
+      post: "/v1/delegate"
       body: "*"
     };
   };
-
-  // UnwatchAddress stops watching an Ark address for rollover.
-  rpc UnwatchAddress(UnwatchAddressRequest) returns (UnwatchAddressResponse) {
-    option (google.api.http) = {
-      post: "/v1/delegate/unwatch"
-      body: "*"
-    };
-  };
-
-  // ListWatchedAddresses returns all addresses currently being watched.
-  rpc ListWatchedAddresses(ListWatchedAddressesRequest) returns (ListWatchedAddressesResponse) {
-    option (google.api.http) = {
-      get: "/v1/delegate/watched"
-    };
-  };
 }
 
-message GetDelegatePublicKeyRequest {}
+// GetDelegatorInfoRequest is the request message for GetDelegatorInfo rpc.
+message GetDelegatorInfoRequest {}
 
-message GetDelegatePublicKeyResponse {
-  string public_key = 1;
+// GetDelegatorInfoResponse is the response message for GetDelegatorInfo rpc.
+message GetDelegatorInfoResponse {
+  // The delegator pubkey to include in the vtxo script.
+  string pubkey = 1;
+  // The service fee applied by the delegator.
+  string fee = 2;
+  // The delegator address for the service fee, if any.
+  string delegator_address = 3;
 }
 
-message Tapscripts {
-  repeated string scripts = 1;
+// DelegateRequest is the request message for Delegate rpc.
+message DelegateRequest {
+  // The partially signed intent that is gonna be registered by the delegator when close enough to
+  // underlying VTXOs expiration.
+  Intent intent = 1;
+  // The partially signed forfeit txs that are gonna be submitted by the delegator when joining
+  // the batch execution.
+  repeated string forfeit_txs = 2;
+  // Opt-in flag to instruct the delegator to not replace an existing delegate that includes at
+  // least one VTXO included in this request.
+  bool reject_replace = 3;
 }
 
-message RolloverAddress {
-  string address = 1;
-  Tapscripts taproot_tree = 2;
-  string destination_address = 3;
-}
+// DelegateResponse is the response message for Delegate rpc.
+message DelegateResponse {}
 
-message WatchAddressForRolloverRequest {
-  RolloverAddress rollover_address = 1;
-}
-
-message WatchAddressForRolloverResponse {}
-
-message UnwatchAddressRequest {
-  string address = 1;
-}
-
-message UnwatchAddressResponse {}
-
-message ListWatchedAddressesRequest {}
-
-message ListWatchedAddressesResponse {
-  repeated RolloverAddress addresses = 1;
+// Intent represents an intent message.
+message Intent {
+  // Intent message in plain-text (stringified JSON).
+  string message = 1;
+  // Intent proof tx (psbt in base64 format).
+  string proof = 2;
 }

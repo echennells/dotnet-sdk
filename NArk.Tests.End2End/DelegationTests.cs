@@ -1,61 +1,73 @@
 using System.Net.Http.Json;
-using CliWrap;
-using CliWrap.Buffered;
+using System.Text.Json.Serialization;
 using NArk.Abstractions.Extensions;
-using NArk.Abstractions.Services;
 using NArk.Core.Contracts;
-using NArk.Core.Services;
-using NArk.Core.Transformers;
 using NArk.Tests.End2End.Core;
 using NArk.Tests.End2End.TestPersistance;
 using NArk.Transport.GrpcClient;
-using NBitcoin;
 
 namespace NArk.Tests.End2End.Delegation;
 
 public class DelegationTests
 {
     [Test]
-    public async Task CanGetDelegatePublicKey()
+    public async Task CanGetDelegatorInfoViaRest()
     {
         using var http = new HttpClient();
         var response = await http.GetAsync(
-            $"{SharedDelegationInfrastructure.DelegatorRestEndpoint}/v1/delegate/pubkey");
+            $"{SharedDelegationInfrastructure.DelegatorEndpoint}/v1/delegator/info");
 
         Assert.That(response.IsSuccessStatusCode, Is.True,
-            $"Delegator pubkey endpoint returned {response.StatusCode}");
+            $"Delegator info endpoint returned {response.StatusCode}");
 
-        var json = await response.Content.ReadFromJsonAsync<DelegatePubkeyResponse>();
-        Assert.That(json?.PublicKey, Is.Not.Null.And.Not.Empty,
+        var json = await response.Content.ReadFromJsonAsync<DelegatorInfoResponse>(
+            new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
+            });
+        Assert.That(json?.Pubkey, Is.Not.Null.And.Not.Empty,
             "Delegator should return a non-empty public key");
 
-        TestContext.Progress.WriteLine($"Delegate pubkey: {json!.PublicKey}");
+        TestContext.Progress.WriteLine($"Delegator pubkey: {json!.Pubkey}");
+        TestContext.Progress.WriteLine($"Delegator fee: {json.Fee}");
+        TestContext.Progress.WriteLine($"Delegator address: {json.DelegatorAddress}");
     }
 
     [Test]
-    public async Task CanWatchAndUnwatchDelegateContract()
+    public async Task CanGetDelegatorInfoViaGrpc()
+    {
+        var delegatorProvider = new GrpcDelegatorProvider(
+            SharedDelegationInfrastructure.DelegatorEndpoint.ToString());
+
+        var info = await delegatorProvider.GetDelegatorInfoAsync();
+
+        Assert.That(info.Pubkey, Is.Not.Null.And.Not.Empty,
+            "Delegator should return a non-empty public key via gRPC");
+
+        TestContext.Progress.WriteLine($"Delegator pubkey (gRPC): {info.Pubkey}");
+        TestContext.Progress.WriteLine($"Delegator fee (gRPC): {info.Fee}");
+    }
+
+    [Test]
+    public async Task CanCreateDelegateContractWithDelegatorPubkey()
     {
         var clientTransport = new GrpcClientTransport(SharedArkInfrastructure.ArkdEndpoint.ToString());
         var serverInfo = await clientTransport.GetServerInfoAsync();
 
-        // 1. Get delegate pubkey
-        using var http = new HttpClient();
-        var pubkeyResponse = await http.GetAsync(
-            $"{SharedDelegationInfrastructure.DelegatorRestEndpoint}/v1/delegate/pubkey");
-        var pubkeyJson = await pubkeyResponse.Content.ReadFromJsonAsync<DelegatePubkeyResponse>();
-        var delegatePubkeyHex = pubkeyJson!.PublicKey!;
+        // 1. Get delegator pubkey
+        var delegatorProvider = new GrpcDelegatorProvider(
+            SharedDelegationInfrastructure.DelegatorEndpoint.ToString());
+        var delegatorInfo = await delegatorProvider.GetDelegatorInfoAsync();
 
-        TestContext.Progress.WriteLine($"Delegate pubkey: {delegatePubkeyHex}");
+        TestContext.Progress.WriteLine($"Delegator pubkey: {delegatorInfo.Pubkey}");
 
-        // 2. Create wallet and delegate contract
+        // 2. Create wallet and derive delegate contract
         var walletProvider = new InMemoryWalletProvider(clientTransport);
-        var contracts = new InMemoryContractStorage();
-        var vtxoStorage = new InMemoryVtxoStorage();
         var walletId = await walletProvider.CreateTestWallet();
 
         var signer = await (await walletProvider.GetAddressProviderAsync(walletId))!
             .GetNextSigningDescriptor();
-        var delegateKey = KeyExtensions.ParseOutputDescriptor(delegatePubkeyHex, serverInfo.Network);
+        var delegateKey = KeyExtensions.ParseOutputDescriptor(delegatorInfo.Pubkey, serverInfo.Network);
 
         var delegateContract = new ArkDelegateContract(
             serverInfo.SignerKey,
@@ -63,79 +75,25 @@ public class DelegationTests
             signer,
             delegateKey);
 
-        var contractService = new ContractService(walletProvider, contracts, clientTransport);
-        await contractService.ImportContract(walletId, delegateContract);
+        var arkAddress = delegateContract.GetArkAddress().ToString(false);
+        TestContext.Progress.WriteLine($"Delegate contract address: {arkAddress}");
 
-        var delegateAddress = delegateContract.GetArkAddress().ToString(false);
-        TestContext.Progress.WriteLine($"Delegate contract address: {delegateAddress}");
+        // 3. Verify the contract has the expected structure
+        var tapLeaves = delegateContract.GetTapScriptList();
+        Assert.That(tapLeaves.Length, Is.EqualTo(3),
+            "Delegate contract should have 3 tap leaves (delegate, forfeit, exit)");
 
-        // 3. Start VTXO sync and fund the delegate contract via arkd
-        var vtxoReceivedTcs = new TaskCompletionSource();
-        vtxoStorage.VtxosChanged += (_, _) => vtxoReceivedTcs.TrySetResult();
+        // 4. Verify round-trip parse via entity serialization
+        var entity = delegateContract.ToEntity("test-wallet");
+        var parsed = ArkDelegateContract.Parse(entity.AdditionalData, serverInfo.Network);
+        Assert.That(parsed.GetArkAddress().ToString(false), Is.EqualTo(arkAddress),
+            "Parsed contract should produce the same address");
 
-        var vtxoSync = new VtxoSynchronizationService(
-            vtxoStorage, clientTransport, [vtxoStorage, contracts]);
-        await vtxoSync.StartAsync(CancellationToken.None);
-
-        var sendResult = await Cli.Wrap("docker")
-            .WithArguments([
-                "exec", "ark", "ark", "send",
-                "--to", delegateAddress,
-                "--amount", "100000",
-                "--password", "secret"
-            ])
-            .WithValidation(CommandResultValidation.None)
-            .ExecuteBufferedAsync();
-
-        Assert.That(sendResult.IsSuccess, Is.True,
-            $"ark send failed: {sendResult.StandardOutput} {sendResult.StandardError}");
-
-        await vtxoReceivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(30));
-
-        var delegateVtxos = (await vtxoStorage.GetVtxos(
-            scripts: [delegateContract.GetScriptPubKey().ToHex()]))
-            .ToList();
-
-        Assert.That(delegateVtxos, Is.Not.Empty, "Should have VTXOs at delegate contract address");
-        TestContext.Progress.WriteLine($"Found {delegateVtxos.Count} delegate VTXOs");
-
-        // 4. Create DelegationService and watch the address
-        var delegatorProvider = new GrpcDelegatorProvider(
-            SharedDelegationInfrastructure.DelegatorGrpcEndpoint.ToString());
-        var delegationService = new DelegationService(
-            [new DelegateContractDelegationTransformer(walletProvider)],
-            delegatorProvider,
-            clientTransport,
-            contracts);
-
-        var watchResult = await delegationService.WatchForRolloverAsync(
-            walletId,
-            delegateVtxos,
-            destinationAddress: delegateAddress);
-
-        Assert.That(watchResult.WatchedAddresses, Is.Not.Empty,
-            "Should have watched at least one address");
-        Assert.That(watchResult.FailedOutpoints, Is.Empty,
-            "No outpoints should have failed");
-
-        TestContext.Progress.WriteLine($"Watched: {string.Join(", ", watchResult.WatchedAddresses)}");
-
-        // 5. Verify in ListWatched
-        var watched = await delegationService.ListWatchedAsync();
-        Assert.That(watched.Any(w => w.Address == watchResult.WatchedAddresses[0]),
-            Is.True, "Watched address should appear in list");
-
-        // 6. Unwatch and verify removal
-        await delegationService.UnwatchAsync(watchResult.WatchedAddresses[0]);
-
-        var afterUnwatch = await delegationService.ListWatchedAsync();
-        Assert.That(afterUnwatch.Any(w => w.Address == watchResult.WatchedAddresses[0]),
-            Is.False, "Unwatched address should no longer appear");
-
-        TestContext.Progress.WriteLine("Watch/Unwatch delegation cycle completed");
-
-        await vtxoSync.DisposeAsync();
+        TestContext.Progress.WriteLine("Delegate contract creation + parse round-trip verified");
     }
 
-    private record DelegatePubkeyResponse(string? PublicKey);
+    private record DelegatorInfoResponse(
+        [property: JsonPropertyName("pubkey")] string? Pubkey,
+        [property: JsonPropertyName("fee")] string? Fee,
+        [property: JsonPropertyName("delegatorAddress")] string? DelegatorAddress);
 }

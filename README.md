@@ -252,7 +252,9 @@ var details = await transport.GetAssetDetailsAsync(assetId);
 
 ## Delegation
 
-Delegation solves the VTXO liveness problem — VTXOs expire if not refreshed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) monitors your VTXOs and automatically participates in batch rounds on your behalf, rolling them over before expiry.
+Delegation solves the VTXO liveness problem — VTXOs expire if not refreshed. A delegate service (e.g., [Fulmine](https://github.com/ArkLabsHQ/fulmine)) participates in batch rounds on your behalf, rolling VTXOs over before expiry.
+
+The delegation flow is intent-based: the client creates a partially signed intent and forfeit transactions, then sends them to the delegator which registers the intent when VTXOs approach expiration.
 
 ### Setup
 
@@ -261,19 +263,21 @@ Delegation solves the VTXO liveness problem — VTXOs expire if not refreshed. A
 services.AddArkCoreServices();
 
 // Connect to a delegator service (Fulmine gRPC endpoint)
-services.AddArkDelegation("http://localhost:7011");
+services.AddArkDelegation("http://localhost:7010");
 ```
 
-### 1. Get the Delegator's Public Key
+### 1. Get Delegator Info
 
 ```csharp
 // The delegator's pubkey is needed when constructing delegate contracts
-var delegatePubkey = await delegationService.GetDelegatePublicKeyAsync();
+var info = await delegationService.GetDelegatorInfoAsync();
+// info.Pubkey  — hex-encoded compressed public key
+// info.Fee     — service fee applied by the delegator
 ```
 
-### 2. Send Funds to a Delegate Contract
+### 2. Create a Delegate Contract
 
-Construct an `ArkDelegateContract` with the delegator's pubkey, then spend funds to it:
+Construct an `ArkDelegateContract` with the delegator's pubkey:
 
 ```csharp
 var serverInfo = await transport.GetServerInfoAsync();
@@ -281,7 +285,7 @@ var delegateContract = new ArkDelegateContract(
     serverInfo.ServerPubKey,
     serverInfo.UnilateralExitDelay,
     userKey,
-    KeyExtensions.ParseOutputDescriptor(delegatePubkey, network),
+    KeyExtensions.ParseOutputDescriptor(info.Pubkey, network),
     cltvLocktime: new LockTime(currentHeight + 100)); // optional safety window
 
 // Spend existing VTXOs to the delegate contract address
@@ -289,31 +293,18 @@ await spendingService.Spend(walletId,
     outputs: [new ArkTxOut(delegateContract.GetArkAddress(), amount)]);
 ```
 
-The CLTV locktime is optional — when set, it prevents the delegate from acting before a specific block height, giving the owner a safety window to spend via the forfeit path first. When omitted, the delegate can act immediately.
+The CLTV locktime is optional — when set, it prevents the delegate from acting before a specific block height, giving the owner a safety window. When omitted, the delegate can act immediately.
 
-### 3. Watch for Automatic Rollover
+### 3. Delegate VTXO Refresh
 
-Register the address with the delegator. It will automatically roll over VTXOs before they expire:
-
-```csharp
-var vtxos = await vtxoStorage.GetVtxos(walletId);
-var result = await delegationService.WatchForRolloverAsync(
-    walletId,
-    vtxos,
-    destinationAddress: myArkAddress.ToString(false));
-
-// result.WatchedAddresses — successfully registered
-// result.FailedOutpoints  — could not be registered (unsupported contract, etc.)
-```
-
-### 4. Manage Watched Addresses
+Create a partially signed intent and forfeit transactions, then send them to the delegator:
 
 ```csharp
-// List all watched addresses
-var watched = await delegationService.ListWatchedAsync();
-
-// Stop watching an address
-await delegationService.UnwatchAsync(arkAddress);
+await delegationService.DelegateAsync(
+    intentMessage: intentJson,     // stringified JSON intent message
+    intentProof: proofPsbtBase64,  // partially signed PSBT (base64)
+    forfeitTxs: forfeitTxHexArray, // partially signed forfeit txs
+    rejectReplace: false);         // allow replacing existing delegation
 ```
 
 ### Custom Contract Delegation
@@ -521,7 +512,7 @@ The SDK uses a pluggable architecture. Register your implementations for:
 | `ICoinSelector` | UTXO selection strategy | `DefaultCoinSelector` |
 | `ISweepPolicy` | VTXO consolidation rules | Register zero or more |
 | `IContractTransformer` | Custom contract &rarr; coin transforms | Register zero or more |
-| `IDelegationTransformer` | Custom contract &rarr; delegation coin | `DelegateContractDelegationTransformer` |
+| `IDelegationTransformer` | Check contract eligibility for delegation | `DelegateContractDelegationTransformer` |
 | `IEventHandler<T>` | React to batch/sweep/spend events | Register zero or more |
 
 ## Local Development
