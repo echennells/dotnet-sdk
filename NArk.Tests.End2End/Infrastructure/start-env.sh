@@ -143,10 +143,19 @@ setup_delegator_wallet() {
   log "Delegator address: $delegator_address"
   log "Funding delegator wallet..."
   $NIGIRI faucet "$delegator_address" 0.01
+
+  # Mine blocks to confirm boarding UTXO before settling
+  log "Mining blocks for delegator boarding confirmation..."
+  $NIGIRI rpc generatetoaddress 3 "$($NIGIRI rpc getnewaddress)"
   sleep 5
 
   log "Settling delegator wallet..."
-  curl -X GET http://localhost:7011/api/v1/settle
+  curl -s -X GET http://localhost:7011/api/v1/settle
+
+  # Wait for batch round and mine commitment tx
+  sleep 15
+  $NIGIRI rpc generatetoaddress 3 "$($NIGIRI rpc getnewaddress)"
+  sleep 3
 
   log "✓ Delegator wallet setup completed!"
 }
@@ -433,7 +442,7 @@ log "Boltz API: http://localhost:9001"
 log "Boltz WebSocket: ws://localhost:9004"
 log "CORS proxy: http://localhost:9069"
 log "Fulmine: http://localhost:7002"
-log "Fulmine delegator: http://localhost:7011 (gRPC: 7010)"
+log "Fulmine delegator: wallet=http://localhost:7011, delegator=http://localhost:7012 (gRPC: 7010)"
 log "LND (nigiri): localhost:10009"
 log "boltz-lnd: localhost:10010"
 log "Chopsticks (Bitcoin explorer): http://localhost:3000"

@@ -82,6 +82,7 @@ services:
     ports:
       - 7010:7000
       - 7011:7001
+      - 7012:7002
     volumes:
       - fulmine_delegator_datadir:/app/data
     restart: unless-stopped

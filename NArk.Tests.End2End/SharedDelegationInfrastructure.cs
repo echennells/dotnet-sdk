@@ -8,9 +8,9 @@ public class SharedDelegationInfrastructure
     /// <summary>REST endpoint for wallet operations (port 7001 internal → 7011 external).</summary>
     public static readonly Uri DelegatorWalletEndpoint = new("http://localhost:7011");
 
-    /// <summary>gRPC + delegator REST endpoint (port 7000 internal → 7010 external).
-    /// Fulmine v0.3.15 runs the delegator HTTP interface on the same port as gRPC.</summary>
-    public static readonly Uri DelegatorEndpoint = new("http://localhost:7010");
+    /// <summary>Delegator gRPC + REST endpoint (port 7002 internal → 7012 external).
+    /// Fulmine v0.3.15 runs the delegator on a separate port from the main gRPC/REST server.</summary>
+    public static readonly Uri DelegatorEndpoint = new("http://localhost:7012");
 
     [OneTimeSetUp]
     public async Task GlobalSetup()
