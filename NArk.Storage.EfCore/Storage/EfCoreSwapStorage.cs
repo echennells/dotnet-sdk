@@ -136,6 +136,7 @@ public class EfCoreSwapStorage : ISwapStorage
         swap.FailReason = failReason;
         swap.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
+        SwapsChanged?.Invoke(this, MapToArkSwap(swap));
         return true;
     }
 
