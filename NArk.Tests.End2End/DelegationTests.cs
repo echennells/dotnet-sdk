@@ -166,6 +166,7 @@ public class DelegationTests
         var assetId = issuance.AssetId;
 
         await AssetTestHelpers.PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+        await AssetTestHelpers.PollAllScripts(walletDetails);
 
         var preBatchBalance = await AssetTestHelpers.GetAssetBalance(wallet.vtxoStorage, assetId);
         Assert.That(preBatchBalance, Is.EqualTo(1000UL), "Pre-batch asset balance should be 1000");

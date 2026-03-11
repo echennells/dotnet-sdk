@@ -145,8 +145,9 @@ public class AssetTests
             new IssuanceParams(Amount: 1000));
         var assetId = issuance.AssetId;
 
-        // Poll until asset VTXO arrives
+        // Poll until asset VTXO arrives, then ensure all VTXOs (including BTC change) are synced
         await PollUntilAssetVtxo(walletDetails, assetId, TimeSpan.FromSeconds(30));
+        await PollAllScripts(walletDetails);
 
         // Verify the asset exists before batch
         var preBatchBalance = await GetAssetBalance(walletDetails.vtxoStorage, assetId);
