@@ -247,7 +247,7 @@ public class PostSpendVtxoPollingHandlerTests
             State: ActionState.Successful,
             FailReason: null);
 
-        // Return a VTXO so the retry loop breaks after the first attempt
+        // Return a VTXO from arkd so the poll finds results
         var dummyVtxo = new ArkVtxo(
             Script: "aabb",
             TransactionId: uint256.One.ToString(),
@@ -265,10 +265,35 @@ public class PostSpendVtxoPollingHandlerTests
                 Arg.Any<CancellationToken>())
             .Returns(new[] { dummyVtxo }.ToAsyncEnumerable());
 
+        // After polling arkd, the handler checks local storage to verify input VTXOs are spent.
+        // Return the input VTXO as spent so the retry loop breaks after the first attempt.
+        var spentInputVtxo = new ArkVtxo(
+            Script: coin.TxOut.ScriptPubKey.ToHex(),
+            TransactionId: coin.Outpoint.Hash.ToString(),
+            TransactionOutputIndex: coin.Outpoint.N,
+            Amount: (ulong)coin.TxOut.Value.Satoshi,
+            SpentByTransactionId: uint256.One.ToString(),
+            SettledByTransactionId: null,
+            Swept: false,
+            CreatedAt: DateTimeOffset.UtcNow,
+            ExpiresAt: null,
+            ExpiresAtHeight: null);
+
+        _vtxoStorage.GetVtxos(
+                scripts: Arg.Any<IReadOnlyCollection<string>?>(),
+                outpoints: Arg.Any<IReadOnlyCollection<OutPoint>?>(),
+                walletIds: Arg.Any<string[]?>(),
+                includeSpent: Arg.Is(true),
+                searchText: Arg.Any<string?>(),
+                skip: Arg.Any<int?>(),
+                take: Arg.Any<int?>(),
+                cancellationToken: Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyCollection<ArkVtxo>>(new[] { spentInputVtxo }));
+
         await _handler.HandleAsync(@event);
 
         // pollOneByOne=true queries each script individually (1 input + 1 output = 2 calls),
-        // and returning a VTXO ensures the retry loop breaks after the first attempt
+        // and returning a spent input VTXO ensures the retry loop breaks after the first attempt
         _clientTransport.Received(2).GetVtxoByScriptsAsSnapshot(
             Arg.Any<IReadOnlySet<string>>(),
             Arg.Any<CancellationToken>());
