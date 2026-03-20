@@ -44,6 +44,7 @@ public class PostBatchVtxoPollingHandlerTests
         _handler = new PostBatchVtxoPollingHandler(
             vtxoSyncService,
             _contractStorage,
+            _vtxoStorage,
             _options);
     }
 
