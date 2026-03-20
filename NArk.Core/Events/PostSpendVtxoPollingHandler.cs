@@ -43,8 +43,13 @@ public class PostSpendVtxoPollingHandler(
         {
             var inputScripts = @event.ArkCoins.Select(c => c.ScriptPubKey.ToHex()).ToHashSet();
             var inputOutpoints = @event.ArkCoins.Select(c => c.Outpoint).ToList();
-            var outputScripts = @event.Psbt.Outputs.Select(o => o.ScriptPubKey.ToHex()).ToHashSet();
-            outputScripts.Remove("51024e73");
+            // Only include P2TR scripts (0x5120 + 32-byte key = 34 bytes hex "5120...").
+            // This filters out OP_RETURN outputs such as the asset packet and the
+            // Ark anchor marker, which the arkd indexer rejects with "invalid script, must be P2TR".
+            var outputScripts = @event.Psbt.Outputs
+                .Select(o => o.ScriptPubKey.ToHex())
+                .Where(s => s.StartsWith("5120") && s.Length == 68)
+                .ToHashSet();
 
             var scripts = inputScripts.Union(outputScripts).ToHashSet();
 
